@@ -1,0 +1,149 @@
+name: GRFP 2026 Watch
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "7,22,37,52 * * * *"
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: grfp-2026-watch
+  cancel-in-progress: false
+
+env:
+  GRFP_YEAR: "2026"
+  GRFP_AWARD_TYPE: "A"
+
+jobs:
+  check-release:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Check Research.gov
+        id: check
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+
+          from fetch_grfp_awardees import fetch_status, render_csv, render_json
+
+          year = os.environ["GRFP_YEAR"]
+          award_type = os.environ["GRFP_AWARD_TYPE"]
+          status = fetch_status(
+              award_year=year,
+              award_type=award_type,
+              timeout=30.0,
+              jsessionid=None,
+              cookie_header=None,
+              retries=3,
+          )
+
+          rows = len(status.awardees)
+          sample_names = ", ".join(awardee.name for awardee in status.awardees[:5])
+
+          if status.status == "available":
+              Path(f"grfp-{year}-{award_type}-first-page.csv").write_text(
+                  render_csv(status.awardees),
+                  encoding="utf-8",
+              )
+              Path(f"grfp-{year}-{award_type}-first-page.json").write_text(
+                  render_json(status.awardees),
+                  encoding="utf-8",
+              )
+
+          with Path(os.environ["GITHUB_OUTPUT"]).open("a", encoding="utf-8") as handle:
+              print(f"status={status.status}", file=handle)
+              print(f"rows={rows}", file=handle)
+              print("message<<__MESSAGE__", file=handle)
+              print(status.message, file=handle)
+              print("__MESSAGE__", file=handle)
+              print("sample_names<<__SAMPLES__", file=handle)
+              print(sample_names, file=handle)
+              print("__SAMPLES__", file=handle)
+
+          summary_lines = [
+              f"## GRFP {year} watch",
+              "",
+              f"- Status: `{status.status}`",
+              f"- Message: {status.message}",
+              f"- Parsed rows from current page: `{rows}`",
+          ]
+          if sample_names:
+              summary_lines.append(f"- Sample names: {sample_names}")
+          summary_lines.append("")
+          summary_lines.append(
+              "This repository currently parses the first results page only. "
+              "That is enough for release detection, but not yet a full export."
+          )
+
+          Path(os.environ["GITHUB_STEP_SUMMARY"]).write_text(
+              "\n".join(summary_lines) + "\n",
+              encoding="utf-8",
+          )
+          PY
+
+      - name: Upload first-page artifact
+        if: steps.check.outputs.status == 'available'
+        uses: actions/upload-artifact@v4
+        with:
+          name: grfp-${{ env.GRFP_YEAR }}-${{ env.GRFP_AWARD_TYPE }}-first-page
+          path: |
+            grfp-${{ env.GRFP_YEAR }}-${{ env.GRFP_AWARD_TYPE }}-first-page.csv
+            grfp-${{ env.GRFP_YEAR }}-${{ env.GRFP_AWARD_TYPE }}-first-page.json
+          if-no-files-found: error
+
+      - name: Open one issue when released
+        if: steps.check.outputs.status == 'available'
+        uses: actions/github-script@v7
+        env:
+          ISSUE_TITLE: GRFP 2026 award list is live
+          CHECK_MESSAGE: ${{ steps.check.outputs.message }}
+          ROWS_COUNT: ${{ steps.check.outputs.rows }}
+          SAMPLE_NAMES: ${{ steps.check.outputs.sample_names }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        with:
+          script: |
+            const title = process.env.ISSUE_TITLE;
+            const { owner, repo } = context.repo;
+            const existing = await github.paginate(github.rest.issues.listForRepo, {
+              owner,
+              repo,
+              state: "all",
+              per_page: 100,
+            });
+            const alreadyReported = existing.find((issue) => issue.title === title);
+            if (alreadyReported) {
+              core.info(`Issue already exists: #${alreadyReported.number}`);
+              return;
+            }
+
+            const body = [
+              process.env.CHECK_MESSAGE,
+              "",
+              `Parsed rows on the current first page: ${process.env.ROWS_COUNT}`,
+              process.env.SAMPLE_NAMES ? `Sample names: ${process.env.SAMPLE_NAMES}` : "",
+              "",
+              `Workflow run: ${process.env.RUN_URL}`,
+              "",
+              "This alert was created automatically by the scheduled GitHub Actions release watch.",
+            ].filter(Boolean).join("\n");
+
+            await github.rest.issues.create({
+              owner,
+              repo,
+              title,
+              body,
+            });
