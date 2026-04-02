@@ -160,7 +160,7 @@ jobs:
             core.setOutput("issue_url", issue.data.html_url);
 
       - name: Send manual test email
-        if: github.event_name == 'workflow_dispatch' && inputs.test_email && secrets.SMTP_HOST != '' && secrets.SMTP_PORT != '' && secrets.SMTP_USERNAME != '' && secrets.SMTP_PASSWORD != '' && secrets.ALERT_TO_EMAIL != ''
+        if: github.event_name == 'workflow_dispatch' && inputs.test_email
         shell: bash
         env:
           SMTP_HOST: ${{ secrets.SMTP_HOST }}
@@ -175,6 +175,17 @@ jobs:
           import os
           import smtplib
           from email.message import EmailMessage
+
+          required = [
+              "SMTP_HOST",
+              "SMTP_PORT",
+              "SMTP_USERNAME",
+              "SMTP_PASSWORD",
+              "ALERT_TO_EMAIL",
+          ]
+          missing = [name for name in required if not os.environ.get(name)]
+          if missing:
+              raise SystemExit(f"Missing required email secrets: {', '.join(missing)}")
 
           smtp_host = os.environ["SMTP_HOST"]
           smtp_port = int(os.environ["SMTP_PORT"])
@@ -205,7 +216,7 @@ jobs:
           PY
 
       - name: Send one email when released
-        if: steps.check.outputs.status == 'available' && steps.issue.outputs.created == 'true' && secrets.SMTP_HOST != '' && secrets.SMTP_PORT != '' && secrets.SMTP_USERNAME != '' && secrets.SMTP_PASSWORD != '' && secrets.ALERT_TO_EMAIL != ''
+        if: steps.check.outputs.status == 'available' && steps.issue.outputs.created == 'true'
         shell: bash
         env:
           SMTP_HOST: ${{ secrets.SMTP_HOST }}
@@ -224,6 +235,17 @@ jobs:
           import os
           import smtplib
           from email.message import EmailMessage
+
+          required = [
+              "SMTP_HOST",
+              "SMTP_PORT",
+              "SMTP_USERNAME",
+              "SMTP_PASSWORD",
+              "ALERT_TO_EMAIL",
+          ]
+          missing = [name for name in required if not os.environ.get(name)]
+          if missing:
+              raise SystemExit(f"Missing required email secrets: {', '.join(missing)}")
 
           smtp_host = os.environ["SMTP_HOST"]
           smtp_port = int(os.environ["SMTP_PORT"])
