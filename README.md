@@ -73,6 +73,15 @@ Typical Gmail values:
 
 The email is only sent when the workflow creates the one-time release issue, so it does not repeat every 15 minutes after the list goes live.
 
+You can also test the email wiring immediately:
+
+- open the workflow page
+- click `Run workflow`
+- enable the `test_email` checkbox
+- run it manually
+
+That sends a test message without opening the real release issue.
+
 ## Notes
 
 - Research.gov currently returns an explicit “not yet available” message for `2026`.

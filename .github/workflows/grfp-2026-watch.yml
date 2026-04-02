@@ -2,6 +2,12 @@ name: GRFP 2026 Watch
 
 on:
   workflow_dispatch:
+    inputs:
+      test_email:
+        description: Send a test email without creating the live release issue
+        required: false
+        default: false
+        type: boolean
   schedule:
     - cron: "7,22,37,52 * * * *"
 
@@ -96,7 +102,7 @@ jobs:
           PY
 
       - name: Upload first-page artifact
-        if: steps.check.outputs.status == 'available'
+        if: steps.check.outputs.status == 'available' && (github.event_name != 'workflow_dispatch' || !inputs.test_email)
         uses: actions/upload-artifact@v4
         with:
           name: grfp-${{ env.GRFP_YEAR }}-${{ env.GRFP_AWARD_TYPE }}-first-page
@@ -107,7 +113,7 @@ jobs:
 
       - name: Open one issue when released
         id: issue
-        if: steps.check.outputs.status == 'available'
+        if: steps.check.outputs.status == 'available' && (github.event_name != 'workflow_dispatch' || !inputs.test_email)
         uses: actions/github-script@v7
         env:
           ISSUE_TITLE: GRFP 2026 award list is live
@@ -152,6 +158,51 @@ jobs:
             });
             core.setOutput("created", "true");
             core.setOutput("issue_url", issue.data.html_url);
+
+      - name: Send manual test email
+        if: github.event_name == 'workflow_dispatch' && inputs.test_email && secrets.SMTP_HOST != '' && secrets.SMTP_PORT != '' && secrets.SMTP_USERNAME != '' && secrets.SMTP_PASSWORD != '' && secrets.ALERT_TO_EMAIL != ''
+        shell: bash
+        env:
+          SMTP_HOST: ${{ secrets.SMTP_HOST }}
+          SMTP_PORT: ${{ secrets.SMTP_PORT }}
+          SMTP_USERNAME: ${{ secrets.SMTP_USERNAME }}
+          SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
+          ALERT_TO_EMAIL: ${{ secrets.ALERT_TO_EMAIL }}
+          ALERT_FROM_EMAIL: ${{ secrets.ALERT_FROM_EMAIL }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          python3 - <<'PY'
+          import os
+          import smtplib
+          from email.message import EmailMessage
+
+          smtp_host = os.environ["SMTP_HOST"]
+          smtp_port = int(os.environ["SMTP_PORT"])
+          smtp_username = os.environ["SMTP_USERNAME"]
+          smtp_password = os.environ["SMTP_PASSWORD"]
+          to_email = os.environ["ALERT_TO_EMAIL"]
+          from_email = os.environ["ALERT_FROM_EMAIL"] or smtp_username
+
+          message = EmailMessage()
+          message["Subject"] = "TEST: GRFP 2026 watch email"
+          message["From"] = from_email
+          message["To"] = to_email
+          message.set_content(
+              "This is a manual test email from the GRFP 2026 GitHub Actions watcher.\n\n"
+              "It does not mean the award list is live.\n\n"
+              f"Workflow run: {os.environ['RUN_URL']}\n"
+          )
+
+          if smtp_port == 465:
+              with smtplib.SMTP_SSL(smtp_host, smtp_port, timeout=30) as client:
+                  client.login(smtp_username, smtp_password)
+                  client.send_message(message)
+          else:
+              with smtplib.SMTP(smtp_host, smtp_port, timeout=30) as client:
+                  client.starttls()
+                  client.login(smtp_username, smtp_password)
+                  client.send_message(message)
+          PY
 
       - name: Send one email when released
         if: steps.check.outputs.status == 'available' && steps.issue.outputs.created == 'true' && secrets.SMTP_HOST != '' && secrets.SMTP_PORT != '' && secrets.SMTP_USERNAME != '' && secrets.SMTP_PASSWORD != '' && secrets.ALERT_TO_EMAIL != ''
