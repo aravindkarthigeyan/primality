@@ -1,5 +1,11 @@
 name: GRFP 2026 Watch
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+  GRFP_YEAR: "2026"
+  GRFP_AWARD_TYPE: "A"
+  DEFAULT_HIGHLIGHT_SCHOOLS: "University of Texas at Austin"
+
 on:
   workflow_dispatch:
     inputs:
@@ -27,7 +33,9 @@ on:
         default: false
         type: boolean
   schedule:
-    - cron: "7,22,37,52 * * * *"
+    # GitHub can delay or drop some scheduled runs, so this checks every five
+    # minutes away from the top of the hour to improve the effective cadence.
+    - cron: "2,7,12,17,22,27,32,37,42,47,52,57 * * * *"
 
 permissions:
   contents: read
@@ -36,11 +44,6 @@ permissions:
 concurrency:
   group: grfp-2026-watch
   cancel-in-progress: false
-
-env:
-  GRFP_YEAR: "2026"
-  GRFP_AWARD_TYPE: "A"
-  DEFAULT_HIGHLIGHT_SCHOOLS: "University of Texas at Austin"
 
 jobs:
   check-release:

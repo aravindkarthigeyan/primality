@@ -5,7 +5,7 @@ This repository is only for watching the NSF GRFP awardee list on Research.gov.
 ## What It Contains
 
 - `fetch_grfp_awardees.py`: fetches and parses the GRFP awardee list page
-- `.github/workflows/grfp-2026-watch.yml`: checks `2026` every 15 minutes on GitHub Actions
+- `.github/workflows/grfp-2026-watch.yml`: checks `2026` on GitHub Actions with an over-scheduled five-minute cadence to compensate for delayed scheduled runs
 
 ## Local Usage
 
@@ -40,7 +40,9 @@ python3 fetch_grfp_awardees.py \
 
 ## GitHub Actions Watch
 
-The workflow runs at `:07`, `:22`, `:37`, and `:52` every hour.
+The workflow is scheduled at `:02`, `:07`, `:12`, `:17`, `:22`, `:27`, `:32`, `:37`, `:42`, `:47`, `:52`, and `:57` every hour.
+
+That is intentionally more frequent than the original 15-minute plan. GitHub scheduled workflows are best-effort and can skip some ticks, so the watcher now gives GitHub twelve chances per hour while still avoiding `:00`, which tends to be busier.
 
 When Research.gov starts returning rows for `2026`:
 
@@ -92,4 +94,4 @@ That sends a test message without opening the real release issue. When the selec
 
 - Research.gov currently returns an explicit “not yet available” message for `2026`.
 - The parser now follows pagination to fetch the full result set when reports are generated.
-- GitHub scheduled workflows can be delayed under load and are automatically disabled after 60 days of no repository activity in public repositories.
+- GitHub scheduled workflows can be delayed or skipped under load and are automatically disabled after 60 days of no repository activity in public repositories.
