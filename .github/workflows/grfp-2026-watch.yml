@@ -3,8 +3,26 @@ name: GRFP 2026 Watch
 on:
   workflow_dispatch:
     inputs:
+      year:
+        description: Year to query for this manual run
+        required: false
+        default: "2026"
+        type: string
+      award_type:
+        description: Award type to query for this manual run
+        required: false
+        default: A
+        type: choice
+        options:
+          - A
+          - H
+      highlight_baccalaureate_schools:
+        description: Comma-separated school names to highlight in the email and summary
+        required: false
+        default: University of Texas at Austin
+        type: string
       test_email:
-        description: Send a test email without creating the live release issue
+        description: Send an email for this run without creating the live release issue
         required: false
         default: false
         type: boolean
@@ -22,6 +40,7 @@ concurrency:
 env:
   GRFP_YEAR: "2026"
   GRFP_AWARD_TYPE: "A"
+  DEFAULT_HIGHLIGHT_SCHOOLS: "University of Texas at Austin"
 
 jobs:
   check-release:
@@ -36,43 +55,92 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Check Research.gov
+      - name: Resolve request
+        id: request
+        shell: bash
+        env:
+          INPUT_YEAR: ${{ inputs.year }}
+          INPUT_AWARD_TYPE: ${{ inputs.award_type }}
+          INPUT_HIGHLIGHT_SCHOOLS: ${{ inputs.highlight_baccalaureate_schools }}
+          INPUT_TEST_EMAIL: ${{ inputs.test_email }}
+        run: |
+          year="${GRFP_YEAR}"
+          award_type="${GRFP_AWARD_TYPE}"
+          highlight_schools="${DEFAULT_HIGHLIGHT_SCHOOLS}"
+          manual_test_email="false"
+
+          if [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ]; then
+            [ -n "${INPUT_YEAR}" ] && year="${INPUT_YEAR}"
+            [ -n "${INPUT_AWARD_TYPE}" ] && award_type="${INPUT_AWARD_TYPE}"
+            [ -n "${INPUT_HIGHLIGHT_SCHOOLS}" ] && highlight_schools="${INPUT_HIGHLIGHT_SCHOOLS}"
+            [ -n "${INPUT_TEST_EMAIL}" ] && manual_test_email="${INPUT_TEST_EMAIL}"
+          fi
+
+          {
+            echo "year=${year}"
+            echo "award_type=${award_type}"
+            echo "manual_test_email=${manual_test_email}"
+            echo "highlight_schools<<__HIGHLIGHTS__"
+            echo "${highlight_schools}"
+            echo "__HIGHLIGHTS__"
+          } >> "${GITHUB_OUTPUT}"
+
+      - name: Check Research.gov and build reports
         id: check
         shell: bash
+        env:
+          REQUEST_YEAR: ${{ steps.request.outputs.year }}
+          REQUEST_AWARD_TYPE: ${{ steps.request.outputs.award_type }}
+          HIGHLIGHT_SCHOOLS: ${{ steps.request.outputs.highlight_schools }}
         run: |
           python3 - <<'PY'
           import os
           from pathlib import Path
 
-          from fetch_grfp_awardees import fetch_status, render_csv, render_json
+          from fetch_grfp_awardees import (
+              fetch_status,
+              parse_highlight_schools,
+              render_csv,
+              render_json,
+              render_school_summary_text,
+          )
 
-          year = os.environ["GRFP_YEAR"]
-          award_type = os.environ["GRFP_AWARD_TYPE"]
+          year = os.environ["REQUEST_YEAR"]
+          award_type = os.environ["REQUEST_AWARD_TYPE"]
+          highlight_schools = parse_highlight_schools(os.environ["HIGHLIGHT_SCHOOLS"])
+
           status = fetch_status(
               award_year=year,
               award_type=award_type,
               timeout=30.0,
               jsessionid=None,
               cookie_header=None,
+              all_pages=True,
               retries=3,
           )
 
           rows = len(status.awardees)
-          sample_names = ", ".join(awardee.name for awardee in status.awardees[:5])
+          sample_names = ", ".join(awardee.name for awardee in status.awardees[:10])
+          csv_path = ""
+          json_path = ""
+          school_summary_path = ""
+          school_summary_text = ""
 
           if status.status == "available":
-              Path(f"grfp-{year}-{award_type}-first-page.csv").write_text(
-                  render_csv(status.awardees),
-                  encoding="utf-8",
-              )
-              Path(f"grfp-{year}-{award_type}-first-page.json").write_text(
-                  render_json(status.awardees),
-                  encoding="utf-8",
-              )
+              csv_path = f"grfp-{year}-{award_type}-all-pages.csv"
+              json_path = f"grfp-{year}-{award_type}-all-pages.json"
+              school_summary_path = f"grfp-{year}-{award_type}-school-summary.txt"
+              Path(csv_path).write_text(render_csv(status.awardees), encoding="utf-8")
+              Path(json_path).write_text(render_json(status.awardees), encoding="utf-8")
+              school_summary_text = render_school_summary_text(status.awardees, highlight_schools)
+              Path(school_summary_path).write_text(school_summary_text, encoding="utf-8")
 
           with Path(os.environ["GITHUB_OUTPUT"]).open("a", encoding="utf-8") as handle:
               print(f"status={status.status}", file=handle)
               print(f"rows={rows}", file=handle)
+              print(f"csv_path={csv_path}", file=handle)
+              print(f"json_path={json_path}", file=handle)
+              print(f"school_summary_path={school_summary_path}", file=handle)
               print("message<<__MESSAGE__", file=handle)
               print(status.message, file=handle)
               print("__MESSAGE__", file=handle)
@@ -85,15 +153,12 @@ jobs:
               "",
               f"- Status: `{status.status}`",
               f"- Message: {status.message}",
-              f"- Parsed rows from current page: `{rows}`",
+              f"- Parsed rows: `{rows}`",
           ]
           if sample_names:
               summary_lines.append(f"- Sample names: {sample_names}")
-          summary_lines.append("")
-          summary_lines.append(
-              "This repository currently parses the first results page only. "
-              "That is enough for release detection, but not yet a full export."
-          )
+          if school_summary_text:
+              summary_lines.extend(["", "### School summary", "", school_summary_text.rstrip()])
 
           Path(os.environ["GITHUB_STEP_SUMMARY"]).write_text(
               "\n".join(summary_lines) + "\n",
@@ -101,19 +166,20 @@ jobs:
           )
           PY
 
-      - name: Upload first-page artifact
-        if: steps.check.outputs.status == 'available' && (github.event_name != 'workflow_dispatch' || !inputs.test_email)
+      - name: Upload report artifacts
+        if: steps.check.outputs.status == 'available' && steps.request.outputs.manual_test_email != 'true'
         uses: actions/upload-artifact@v4
         with:
-          name: grfp-${{ env.GRFP_YEAR }}-${{ env.GRFP_AWARD_TYPE }}-first-page
+          name: grfp-${{ steps.request.outputs.year }}-${{ steps.request.outputs.award_type }}-reports
           path: |
-            grfp-${{ env.GRFP_YEAR }}-${{ env.GRFP_AWARD_TYPE }}-first-page.csv
-            grfp-${{ env.GRFP_YEAR }}-${{ env.GRFP_AWARD_TYPE }}-first-page.json
+            ${{ steps.check.outputs.csv_path }}
+            ${{ steps.check.outputs.json_path }}
+            ${{ steps.check.outputs.school_summary_path }}
           if-no-files-found: error
 
       - name: Open one issue when released
         id: issue
-        if: steps.check.outputs.status == 'available' && (github.event_name != 'workflow_dispatch' || !inputs.test_email)
+        if: steps.check.outputs.status == 'available' && steps.request.outputs.manual_test_email != 'true' && steps.request.outputs.year == env.GRFP_YEAR && steps.request.outputs.award_type == env.GRFP_AWARD_TYPE
         uses: actions/github-script@v7
         env:
           ISSUE_TITLE: GRFP 2026 award list is live
@@ -142,7 +208,7 @@ jobs:
             const body = [
               process.env.CHECK_MESSAGE,
               "",
-              `Parsed rows on the current first page: ${process.env.ROWS_COUNT}`,
+              `Parsed rows across the full result set: ${process.env.ROWS_COUNT}`,
               process.env.SAMPLE_NAMES ? `Sample names: ${process.env.SAMPLE_NAMES}` : "",
               "",
               `Workflow run: ${process.env.RUN_URL}`,
@@ -160,7 +226,7 @@ jobs:
             core.setOutput("issue_url", issue.data.html_url);
 
       - name: Send manual test email
-        if: github.event_name == 'workflow_dispatch' && inputs.test_email
+        if: github.event_name == 'workflow_dispatch' && steps.request.outputs.manual_test_email == 'true'
         shell: bash
         env:
           SMTP_HOST: ${{ secrets.SMTP_HOST }}
@@ -169,12 +235,23 @@ jobs:
           SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
           ALERT_TO_EMAIL: ${{ secrets.ALERT_TO_EMAIL }}
           ALERT_FROM_EMAIL: ${{ secrets.ALERT_FROM_EMAIL }}
+          REQUEST_YEAR: ${{ steps.request.outputs.year }}
+          REQUEST_AWARD_TYPE: ${{ steps.request.outputs.award_type }}
+          CHECK_STATUS: ${{ steps.check.outputs.status }}
+          CHECK_MESSAGE: ${{ steps.check.outputs.message }}
+          ROWS_COUNT: ${{ steps.check.outputs.rows }}
+          SAMPLE_NAMES: ${{ steps.check.outputs.sample_names }}
+          CSV_PATH: ${{ steps.check.outputs.csv_path }}
+          JSON_PATH: ${{ steps.check.outputs.json_path }}
+          SCHOOL_SUMMARY_PATH: ${{ steps.check.outputs.school_summary_path }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           python3 - <<'PY'
+          import mimetypes
           import os
           import smtplib
           from email.message import EmailMessage
+          from pathlib import Path
 
           required = [
               "SMTP_HOST",
@@ -193,16 +270,50 @@ jobs:
           smtp_password = os.environ["SMTP_PASSWORD"]
           to_email = os.environ["ALERT_TO_EMAIL"]
           from_email = os.environ["ALERT_FROM_EMAIL"] or smtp_username
+          year = os.environ["REQUEST_YEAR"]
+          award_type = os.environ["REQUEST_AWARD_TYPE"]
+          check_status = os.environ["CHECK_STATUS"]
+
+          summary_text = ""
+          school_summary_path = os.environ.get("SCHOOL_SUMMARY_PATH", "")
+          if school_summary_path and Path(school_summary_path).exists():
+              summary_text = Path(school_summary_path).read_text(encoding="utf-8")
+
+          body_lines = [
+              f"This is a manual test email for GRFP {year} award type {award_type}.",
+              "",
+              f"Status: {check_status}",
+              os.environ["CHECK_MESSAGE"],
+              "",
+              f"Parsed rows: {os.environ['ROWS_COUNT']}",
+              os.environ["SAMPLE_NAMES"] and f"Sample names: {os.environ['SAMPLE_NAMES']}" or "",
+              "",
+              "This does not create the live release issue.",
+              f"Workflow run: {os.environ['RUN_URL']}",
+          ]
+          if summary_text:
+              body_lines.extend(["", summary_text.strip()])
+          body = "\n".join(line for line in body_lines if line)
 
           message = EmailMessage()
-          message["Subject"] = "TEST: GRFP 2026 watch email"
+          message["Subject"] = f"TEST: GRFP {year} {award_type} report"
           message["From"] = from_email
           message["To"] = to_email
-          message.set_content(
-              "This is a manual test email from the GRFP 2026 GitHub Actions watcher.\n\n"
-              "It does not mean the award list is live.\n\n"
-              f"Workflow run: {os.environ['RUN_URL']}\n"
-          )
+          message.set_content(body)
+
+          for path_env in ("CSV_PATH", "JSON_PATH", "SCHOOL_SUMMARY_PATH"):
+              path_value = os.environ.get(path_env, "")
+              if not path_value or not Path(path_value).exists():
+                  continue
+              filename = Path(path_value).name
+              mime_type, _ = mimetypes.guess_type(filename)
+              maintype, subtype = (mime_type or "application/octet-stream").split("/", 1)
+              message.add_attachment(
+                  Path(path_value).read_bytes(),
+                  maintype=maintype,
+                  subtype=subtype,
+                  filename=filename,
+              )
 
           if smtp_port == 465:
               with smtplib.SMTP_SSL(smtp_host, smtp_port, timeout=30) as client:
@@ -225,16 +336,23 @@ jobs:
           SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
           ALERT_TO_EMAIL: ${{ secrets.ALERT_TO_EMAIL }}
           ALERT_FROM_EMAIL: ${{ secrets.ALERT_FROM_EMAIL }}
+          REQUEST_YEAR: ${{ steps.request.outputs.year }}
+          REQUEST_AWARD_TYPE: ${{ steps.request.outputs.award_type }}
           CHECK_MESSAGE: ${{ steps.check.outputs.message }}
           ROWS_COUNT: ${{ steps.check.outputs.rows }}
           SAMPLE_NAMES: ${{ steps.check.outputs.sample_names }}
+          CSV_PATH: ${{ steps.check.outputs.csv_path }}
+          JSON_PATH: ${{ steps.check.outputs.json_path }}
+          SCHOOL_SUMMARY_PATH: ${{ steps.check.outputs.school_summary_path }}
           ISSUE_URL: ${{ steps.issue.outputs.issue_url }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           python3 - <<'PY'
+          import mimetypes
           import os
           import smtplib
           from email.message import EmailMessage
+          from pathlib import Path
 
           required = [
               "SMTP_HOST",
@@ -253,24 +371,46 @@ jobs:
           smtp_password = os.environ["SMTP_PASSWORD"]
           to_email = os.environ["ALERT_TO_EMAIL"]
           from_email = os.environ["ALERT_FROM_EMAIL"] or smtp_username
+          year = os.environ["REQUEST_YEAR"]
+          award_type = os.environ["REQUEST_AWARD_TYPE"]
 
-          subject = "GRFP 2026 award list is live"
+          summary_text = ""
+          school_summary_path = os.environ.get("SCHOOL_SUMMARY_PATH", "")
+          if school_summary_path and Path(school_summary_path).exists():
+              summary_text = Path(school_summary_path).read_text(encoding="utf-8")
+
           body_lines = [
               os.environ["CHECK_MESSAGE"],
               "",
-              f"Parsed rows on the current first page: {os.environ['ROWS_COUNT']}",
+              f"Parsed rows across the full result set: {os.environ['ROWS_COUNT']}",
               os.environ["SAMPLE_NAMES"] and f"Sample names: {os.environ['SAMPLE_NAMES']}" or "",
               "",
               f"Issue: {os.environ['ISSUE_URL']}",
               f"Workflow run: {os.environ['RUN_URL']}",
           ]
+          if summary_text:
+              body_lines.extend(["", summary_text.strip()])
           body = "\n".join(line for line in body_lines if line)
 
           message = EmailMessage()
-          message["Subject"] = subject
+          message["Subject"] = f"GRFP {year} award list is live"
           message["From"] = from_email
           message["To"] = to_email
           message.set_content(body)
+
+          for path_env in ("CSV_PATH", "JSON_PATH", "SCHOOL_SUMMARY_PATH"):
+              path_value = os.environ.get(path_env, "")
+              if not path_value or not Path(path_value).exists():
+                  continue
+              filename = Path(path_value).name
+              mime_type, _ = mimetypes.guess_type(filename)
+              maintype, subtype = (mime_type or "application/octet-stream").split("/", 1)
+              message.add_attachment(
+                  Path(path_value).read_bytes(),
+                  maintype=maintype,
+                  subtype=subtype,
+                  filename=filename,
+              )
 
           if smtp_port == 465:
               with smtplib.SMTP_SSL(smtp_host, smtp_port, timeout=30) as client:

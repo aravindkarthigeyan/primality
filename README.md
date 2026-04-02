@@ -44,7 +44,7 @@ The workflow runs at `:07`, `:22`, `:37`, and `:52` every hour.
 
 When Research.gov starts returning rows for `2026`:
 
-- the workflow uploads first-page CSV and JSON artifacts
+- the workflow uploads full-list CSV, JSON, and school-summary artifacts
 - the workflow opens one GitHub issue titled `GRFP 2026 award list is live`
 - the workflow can send one email if SMTP secrets are configured
 
@@ -77,13 +77,19 @@ You can also test the email wiring immediately:
 
 - open the workflow page
 - click `Run workflow`
+- set `year` to `2025`
 - enable the `test_email` checkbox
 - run it manually
 
-That sends a test message without opening the real release issue.
+That sends a test message without opening the real release issue. When the selected year is available, the email includes:
+
+- the full CSV as an attachment
+- the full JSON as an attachment
+- a school summary text attachment
+- highlighted baccalaureate school names in the email body
 
 ## Notes
 
 - Research.gov currently returns an explicit “not yet available” message for `2026`.
-- The parser currently captures the first result page, which is enough for release detection.
+- The parser now follows pagination to fetch the full result set when reports are generated.
 - GitHub scheduled workflows can be delayed under load and are automatically disabled after 60 days of no repository activity in public repositories.
