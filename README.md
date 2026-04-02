@@ -46,10 +46,32 @@ When Research.gov starts returning rows for `2026`:
 
 - the workflow uploads first-page CSV and JSON artifacts
 - the workflow opens one GitHub issue titled `GRFP 2026 award list is live`
+- the workflow can send one email if SMTP secrets are configured
 
 Current workflow link:
 
 - [GRFP 2026 Watch](https://github.com/aravindkarthigeyan/primality/actions/workflows/grfp-2026-watch.yml)
+
+### Email Setup
+
+Add these repository secrets in GitHub:
+
+- `SMTP_HOST`
+- `SMTP_PORT`
+- `SMTP_USERNAME`
+- `SMTP_PASSWORD`
+- `ALERT_TO_EMAIL`
+- `ALERT_FROM_EMAIL` (optional; falls back to `SMTP_USERNAME`)
+
+Typical Gmail values:
+
+- `SMTP_HOST`: `smtp.gmail.com`
+- `SMTP_PORT`: `465`
+- `SMTP_USERNAME`: your Gmail address
+- `SMTP_PASSWORD`: a Gmail app password
+- `ALERT_TO_EMAIL`: the address that should receive the alert
+
+The email is only sent when the workflow creates the one-time release issue, so it does not repeat every 15 minutes after the list goes live.
 
 ## Notes
 
